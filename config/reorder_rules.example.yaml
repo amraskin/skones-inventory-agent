@@ -1,0 +1,41 @@
+# Reorder rules - PLACEHOLDER. Real thresholds and category rules TBD.
+# Copy to reorder_rules.yaml and edit; that file is the one run_daily.py reads.
+#
+# How it's used (src/reorder.py):
+#   days_of_stock_remaining = qty_on_hand / daily_sales_velocity
+#   reorder_threshold_days  = lead_time_days + safety_stock_days
+#   needs_reorder           = days_of_stock_remaining <= reorder_threshold_days
+#   suggested_order_qty     = ceil(daily_sales_velocity * (reorder_threshold_days + reorder_cycle_days) - qty_on_hand)
+
+defaults:
+  lead_time_days: 7          # typical days between placing an order and receiving it
+  safety_stock_days: 3       # extra buffer on top of lead time
+  reorder_cycle_days: 7      # how often you plan to place orders (order enough to last until the next one)
+  min_order_qty: 1
+
+# Per-category overrides (category names should match your COVA category field)
+categories:
+  flower:
+    lead_time_days: 5
+    safety_stock_days: 3
+  edibles:
+    lead_time_days: 7
+    safety_stock_days: 5
+  vapes:
+    lead_time_days: 10
+    safety_stock_days: 5
+  concentrates:
+    lead_time_days: 7
+    safety_stock_days: 5
+  pre-rolls:
+    lead_time_days: 5
+    safety_stock_days: 3
+
+# Per-product overrides (keyed by exact COVA product name or SKU) - optional, sparse.
+# Use this for products with their own par level, order cap, or preferred vendor.
+products: {}
+  # "Example Product Name":
+  #   par_level: 20          # always keep at least this many on hand regardless of velocity math
+  #   max_order_qty: 50      # never suggest ordering more than this at once
+  #   preferred_vendor: nabis
+  #   do_not_reorder: false

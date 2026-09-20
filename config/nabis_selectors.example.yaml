@@ -1,0 +1,27 @@
+# CSS selectors for the Nabis site (https://ny.nabis.com), used by src/vendors/nabis.py.
+#
+# UNVERIFIED PLACEHOLDER VALUES. This environment's network policy blocks
+# ny.nabis.com, so these were never checked against the live site. Before the
+# Nabis integration will actually work, run scripts/nabis_login.py from a
+# machine with normal internet access, then use your browser's "Inspect
+# Element" on the login and catalog/search pages to fill in the real
+# selectors below. Copy this file to nabis_selectors.yaml when done.
+
+login:
+  url: "https://ny.nabis.com/login"
+  email_input: "input[type='email'], input[name='email']"
+  password_input: "input[type='password'], input[name='password']"
+  submit_button: "button[type='submit']"
+  # Selector that only appears once you're actually logged in - used to
+  # confirm login succeeded (and to detect when a saved session expired).
+  logged_in_indicator: "text=My Organizations"
+
+catalog:
+  # Where to search for a product by name after logging in.
+  search_url_template: "https://ny.nabis.com/catalog?search={query}"
+  search_input: "input[type='search']"
+  product_card: "[data-testid='product-card']"
+  # Selectors below are relative to product_card
+  product_name: "[data-testid='product-name']"
+  product_price: "[data-testid='product-price']"
+  product_stock: "[data-testid='product-stock']"

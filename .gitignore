@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets
+.env
+
+# Sensitive business data - never commit real sales/inventory exports or POs
+/data/*
+!/data/.gitkeep
+/output/*
+!/output/.gitkeep
+
+# OS
+.DS_Store
