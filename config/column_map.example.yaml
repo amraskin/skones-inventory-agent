@@ -7,6 +7,7 @@ sales_export:
   product: ["Product", "Product Name", "Item", "Item Name"]
   sku: ["SKU", "Product SKU", "Item SKU"]
   category: ["Category", "Product Category", "Master Category"]
+  brand: ["Brand", "Brand Name", "Vendor Brand", "Producer"]
   quantity_sold: ["Qty Sold", "Quantity Sold", "Units Sold", "Qty"]
   date: ["Date", "Sale Date", "Transaction Date"]
 
@@ -14,4 +15,10 @@ inventory_export:
   product: ["Product", "Product Name", "Item", "Item Name"]
   sku: ["SKU", "Product SKU", "Item SKU"]
   category: ["Category", "Product Category", "Master Category"]
+  brand: ["Brand", "Brand Name", "Vendor Brand", "Producer"]
   quantity_on_hand: ["On Hand", "Qty On Hand", "Stock On Hand", "Available", "Available Qty"]
+
+# "brand" is used to group SKUs (Category + Brand) for the reorder-dampening
+# logic in reorder.py. If your COVA export has no brand column, remove the
+# "brand" line above from both sections and grouping will fall back to
+# Category alone.

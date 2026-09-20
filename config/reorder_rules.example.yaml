@@ -1,16 +1,43 @@
-# Reorder rules - PLACEHOLDER. Real thresholds and category rules TBD.
-# Copy to reorder_rules.yaml and edit; that file is the one run_daily.py reads.
+# Reorder rules. Copy to reorder_rules.yaml and edit; that's the file
+# src/reorder.py actually reads.
 #
-# How it's used (src/reorder.py):
-#   days_of_stock_remaining = qty_on_hand / daily_sales_velocity
-#   reorder_threshold_days  = lead_time_days + safety_stock_days
-#   needs_reorder           = days_of_stock_remaining <= reorder_threshold_days
-#   suggested_order_qty     = ceil(daily_sales_velocity * (reorder_threshold_days + reorder_cycle_days) - qty_on_hand)
+# THE MODEL (src/reorder.py):
+#
+# 1. Velocity gate: a SKU selling below `min_weekly_velocity` is dropped
+#    entirely - not enough signal to justify reordering it at all, however
+#    low its stock is.
+#
+# 2. "Low" test: a SKU is low if it's under `reorder_pct_threshold` of its
+#    own baseline purchase quantity (baseline is inferred automatically from
+#    restock jumps - see src/baseline_tracker.py), OR under its explicit
+#    par_level if one is set for it.
+#
+# 3. SKUs are grouped by Category + Brand. A group is "healthy" if its total
+#    on-hand across all SKUs in the group would last through lead_time_days +
+#    safety_stock_days at the group's overall selling pace - i.e. even
+#    though this one SKU is low, there's enough of its siblings around that
+#    you're not about to run out of that product line.
+#
+# 4. "Outlier mover" test: within a group, a SKU is an outlier if it accounts
+#    for at least `outlier_share_threshold` of the group's total sales
+#    velocity - i.e. it's the one actually selling while the rest of the
+#    group sits still, so its own low stock is a real signal even if the
+#    group looks fine on paper.
+#
+# 5. Decision: a low SKU goes on the actual purchase order if the group is
+#    NOT healthy, OR it's an outlier mover, OR it breached an explicit
+#    par_level. A low SKU that's just noise (group healthy, no outlier) goes
+#    on the separate "Watching" list instead - visible, not urgent.
+#
+# 6. Order quantity: enough to bring the SKU back to its baseline quantity
+#    (or its par_level if that's higher), clamped to min/max_order_qty.
 
 defaults:
-  lead_time_days: 7          # typical days between placing an order and receiving it
-  safety_stock_days: 3       # extra buffer on top of lead time
-  reorder_cycle_days: 7      # how often you plan to place orders (order enough to last until the next one)
+  min_weekly_velocity: 1       # must sell at least this many units/week to be reorder-eligible at all
+  reorder_pct_threshold: 0.26  # "low" = on-hand is under this fraction of baseline purchase qty
+  outlier_share_threshold: 0.7 # this SKU's share of its group's total velocity to count as an "outlier mover"
+  lead_time_days: 7            # typical days between placing an order and receiving it (used for group health)
+  safety_stock_days: 3         # extra buffer on top of lead time (used for group health)
   min_order_qty: 1
 
 # Per-category overrides (category names should match your COVA category field)
@@ -32,10 +59,9 @@ categories:
     safety_stock_days: 3
 
 # Per-product overrides (keyed by exact COVA product name or SKU) - optional, sparse.
-# Use this for products with their own par level, order cap, or preferred vendor.
 products: {}
   # "Example Product Name":
-  #   par_level: 20          # always keep at least this many on hand regardless of velocity math
+  #   par_level: 20          # always treat as low below this qty, regardless of baseline %
   #   max_order_qty: 50      # never suggest ordering more than this at once
   #   preferred_vendor: nabis
   #   do_not_reorder: false

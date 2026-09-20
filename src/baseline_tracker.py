@@ -1,0 +1,75 @@
+"""Infers each SKU's "original purchase quantity" - the 26%-of-what number
+compares against - since COVA exports are just point-in-time snapshots with
+no purchase/receiving history attached.
+
+Approach: keep a small local record per SKU of the last on-hand quantity we
+saw. If a new snapshot shows MORE on hand than last time, that's a restock -
+treat the new (higher) quantity as the fresh baseline. Otherwise keep the
+existing baseline. The very first time a SKU is seen, its current quantity
+becomes the initial baseline (a rough guess until the next real restock).
+
+State persists in data/state/inventory_baselines.json (gitignored - it's
+derived operational state, not something to version).
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STATE_PATH = REPO_ROOT / "data" / "state" / "inventory_baselines.json"
+
+
+def _load_state() -> dict:
+    if not STATE_PATH.exists():
+        return {}
+    with open(STATE_PATH) as f:
+        return json.load(f)
+
+
+def _save_state(state: dict) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
+
+
+def update_and_get_baselines(inventory_df: pd.DataFrame, as_of: str | None = None) -> pd.DataFrame:
+    """inventory_df: output of parse_cova.parse_inventory_export (needs sku, quantity_on_hand).
+
+    Returns inventory_df with an added `baseline_qty` column, and updates the
+    persisted state file as a side effect (call this once per real daily run,
+    not repeatedly against the same snapshot, or restocks will be missed).
+    """
+    as_of = as_of or pd.Timestamp.now().isoformat()
+    state = _load_state()
+
+    baselines = []
+    for _, row in inventory_df.iterrows():
+        sku = str(row["sku"])
+        current_qty = row["quantity_on_hand"]
+        entry = state.get(sku)
+
+        if entry is None:
+            baseline_qty = current_qty
+        elif current_qty > entry["last_seen_qty"]:
+            # Restock detected: the last known baseline had already been
+            # drawn down, and now there's more on hand than there was -
+            # that increase can only have come from a new order arriving.
+            baseline_qty = current_qty
+        else:
+            baseline_qty = entry["baseline_qty"]
+
+        state[sku] = {
+            "baseline_qty": baseline_qty,
+            "last_seen_qty": current_qty,
+            "last_seen_at": as_of,
+        }
+        baselines.append(baseline_qty)
+
+    _save_state(state)
+
+    out = inventory_df.copy()
+    out["baseline_qty"] = baselines
+    return out

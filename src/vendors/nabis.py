@@ -62,20 +62,7 @@ class NabisClient(VendorClient):
                 "scripts/nabis_login.py to refresh it."
             ) from e
 
-    def search_product(self, product_name: str) -> VendorProduct | None:
-        cfg = self.selectors["catalog"]
-        url = cfg["search_url_template"].format(query=product_name)
-        self.page.goto(url)
-        self.page.wait_for_timeout(1500)  # TODO: replace with a real wait-for-selector once verified
-
-        cards = self.page.query_selector_all(cfg["product_card"])
-        if not cards:
-            return None
-
-        # Take the first result as the best match. TODO once selectors are
-        # verified: consider fuzzy-matching product_name against candidates
-        # instead of trusting the site's own search ranking.
-        card = cards[0]
+    def _extract_card(self, card, cfg) -> tuple[str | None, float | None, bool | None]:
         name_el = card.query_selector(cfg["product_name"])
         price_el = card.query_selector(cfg["product_price"])
         stock_el = card.query_selector(cfg["product_stock"])
@@ -93,6 +80,26 @@ class NabisClient(VendorClient):
         if stock_text:
             in_stock = "out of stock" not in stock_text.lower()
 
+        return raw_name, price, in_stock
+
+    def _search(self, query: str) -> list:
+        cfg = self.selectors["catalog"]
+        url = cfg["search_url_template"].format(query=query)
+        self.page.goto(url)
+        self.page.wait_for_timeout(1500)  # TODO: replace with a real wait-for-selector once verified
+        return self.page.query_selector_all(cfg["product_card"]), url
+
+    def search_product(self, product_name: str) -> VendorProduct | None:
+        cfg = self.selectors["catalog"]
+        cards, url = self._search(product_name)
+        if not cards:
+            return None
+
+        # Take the first result as the best match. TODO once selectors are
+        # verified: consider fuzzy-matching product_name against candidates
+        # instead of trusting the site's own search ranking.
+        raw_name, price, in_stock = self._extract_card(cards[0], cfg)
+
         return VendorProduct(
             name=product_name,
             price=price,
@@ -100,6 +107,34 @@ class NabisClient(VendorClient):
             url=url,
             raw_match_name=raw_name,
         )
+
+    def find_substitute(
+        self, category: str | None, brand: str | None, exclude_name: str
+    ) -> VendorProduct | None:
+        """Search by category+brand instead of exact product name, and
+        return the first in-stock result that isn't the excluded product."""
+        cfg = self.selectors["catalog"]
+        query = " ".join(part for part in [brand, category] if part)
+        if not query:
+            return None
+        cards, url = self._search(query)
+
+        for card in cards:
+            raw_name, price, in_stock = self._extract_card(card, cfg)
+            if not raw_name or raw_name == exclude_name:
+                continue
+            if in_stock is False:
+                continue
+            return VendorProduct(
+                name=raw_name,
+                price=price,
+                in_stock=in_stock,
+                url=url,
+                raw_match_name=raw_name,
+                is_substitute=True,
+                substitute_for=exclude_name,
+            )
+        return None
 
     def close(self) -> None:
         self._context.close()
