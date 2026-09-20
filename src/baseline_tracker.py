@@ -3,9 +3,10 @@ compares against - since COVA exports are just point-in-time snapshots with
 no purchase/receiving history attached.
 
 Approach: keep a small local record per SKU of the last on-hand quantity we
-saw. If a new snapshot shows MORE on hand than last time, that's a restock -
-treat the new (higher) quantity as the fresh baseline. Otherwise keep the
-existing baseline. The very first time a SKU is seen, its current quantity
+saw. A restock is detected when either (a) on-hand went up since last time,
+or (b) COVA's own "Last Received Date" for that SKU advanced - whichever
+signal is available. When detected, the new on-hand quantity becomes the
+fresh baseline. The very first time a SKU is seen, its current quantity
 becomes the initial baseline (a rough guess until the next real restock).
 
 State persists in data/state/inventory_baselines.json (gitignored - it's
@@ -45,25 +46,29 @@ def update_and_get_baselines(inventory_df: pd.DataFrame, as_of: str | None = Non
     as_of = as_of or pd.Timestamp.now().isoformat()
     state = _load_state()
 
+    has_received_date = "last_received_date" in inventory_df.columns
+
     baselines = []
     for _, row in inventory_df.iterrows():
         sku = str(row["sku"])
         current_qty = row["quantity_on_hand"]
+        received_date = str(row["last_received_date"]) if has_received_date and pd.notna(row["last_received_date"]) else None
         entry = state.get(sku)
 
         if entry is None:
             baseline_qty = current_qty
-        elif current_qty > entry["last_seen_qty"]:
-            # Restock detected: the last known baseline had already been
-            # drawn down, and now there's more on hand than there was -
-            # that increase can only have come from a new order arriving.
-            baseline_qty = current_qty
         else:
-            baseline_qty = entry["baseline_qty"]
+            qty_increased = current_qty > entry["last_seen_qty"]
+            newly_received = (
+                received_date is not None
+                and received_date != entry.get("last_received_date")
+            )
+            baseline_qty = current_qty if (qty_increased or newly_received) else entry["baseline_qty"]
 
         state[sku] = {
             "baseline_qty": baseline_qty,
             "last_seen_qty": current_qty,
+            "last_received_date": received_date,
             "last_seen_at": as_of,
         }
         baselines.append(baseline_qty)

@@ -9,14 +9,17 @@
 #
 # 2. "Low" test: a SKU is low if it's under `reorder_pct_threshold` of its
 #    own baseline purchase quantity (baseline is inferred automatically from
-#    restock jumps - see src/baseline_tracker.py), OR under its explicit
-#    par_level if one is set for it.
+#    restock jumps - see src/baseline_tracker.py), OR under its par_level:
+#    an explicit override here if you've set one, else whatever "Minimum
+#    Stock" is set to for that SKU in COVA itself.
 #
-# 3. SKUs are grouped by Category + Brand. A group is "healthy" if its total
-#    on-hand across all SKUs in the group would last through lead_time_days +
-#    safety_stock_days at the group's overall selling pace - i.e. even
-#    though this one SKU is low, there's enough of its siblings around that
-#    you're not about to run out of that product line.
+# 3. SKUs are grouped by Category + Brand (falling back to Category +
+#    Supplier for the SKUs with no brand on file - mostly accessories/glass).
+#    A group is "healthy" if its total on-hand across all SKUs in the group
+#    would last through lead_time_days + safety_stock_days at the group's
+#    overall selling pace - i.e. even though this one SKU is low, there's
+#    enough of its siblings around that you're not about to run out of that
+#    product line.
 #
 # 4. "Outlier mover" test: within a group, a SKU is an outlier if it accounts
 #    for at least `outlier_share_threshold` of the group's total sales
@@ -30,7 +33,10 @@
 #    on the separate "Watching" list instead - visible, not urgent.
 #
 # 6. Order quantity: enough to bring the SKU back to its baseline quantity
-#    (or its par_level if that's higher), clamped to min/max_order_qty.
+#    (or its par_level if that's higher), minus whatever's already on order,
+#    clamped to min/max_order_qty. If what's already on order fully covers
+#    the shortfall, the SKU is marked "on_order" instead of "reorder" - it's
+#    already handled, just shown so you know not to double-order it.
 
 defaults:
   min_weekly_velocity: 1       # must sell at least this many units/week to be reorder-eligible at all

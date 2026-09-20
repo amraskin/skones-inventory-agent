@@ -1,11 +1,12 @@
-"""Daily entrypoint: parse today's COVA exports, decide what needs reordering,
-optionally check live vendor pricing, and write a draft purchase order.
+"""Daily entrypoint: parse the COVA "Reorder" report (joined with "Inventory
+On Hand by Product" for Brand), decide what needs reordering, optionally
+check live vendor pricing, and write a draft purchase order.
 
 Usage:
     python -m src.run_daily \\
-        --sales data/sales_export.xlsx \\
-        --inventory data/inventory_export.xlsx \\
-        [--no-vendor-lookup] [--output output/purchase_order.xlsx]
+        --reorder-report data/Reorder.xlsx \\
+        --inventory-catalog data/InventoryOnHandByProduct.xlsx \\
+        [--velocity-window 30] [--no-vendor-lookup] [--output output/purchase_order.xlsx]
 """
 from __future__ import annotations
 
@@ -22,8 +23,19 @@ def main():
     load_dotenv()
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sales", required=True, help="Path to COVA sales export (xlsx/csv)")
-    parser.add_argument("--inventory", required=True, help="Path to COVA inventory/stock export (xlsx/csv)")
+    parser.add_argument("--reorder-report", required=True, help="Path to COVA 'Reorder' scheduled report (xlsx)")
+    parser.add_argument(
+        "--inventory-catalog",
+        required=True,
+        help="Path to COVA 'Inventory On Hand by Product' report (xlsx) - used to join in Brand",
+    )
+    parser.add_argument(
+        "--velocity-window",
+        type=int,
+        default=parse_cova.DEFAULT_VELOCITY_WINDOW_DAYS,
+        choices=[7, 14, 30, 60],
+        help="Which of COVA's sales windows to use for daily velocity (default: 30)",
+    )
     parser.add_argument("--output", default=None, help="Output PO workbook path")
     parser.add_argument(
         "--no-vendor-lookup",
@@ -32,21 +44,28 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Parsing sales export: {args.sales}")
-    sales_df = parse_cova.parse_sales_export(args.sales)
-    sales_summary = parse_cova.summarize_sales(sales_df)
+    print(f"Parsing reorder report: {args.reorder_report}")
+    reorder_df = parse_cova.parse_reorder_report(args.reorder_report, velocity_window_days=args.velocity_window)
 
-    print(f"Parsing inventory export: {args.inventory}")
-    inventory_df = parse_cova.parse_inventory_export(args.inventory)
+    print(f"Parsing inventory catalog for brand: {args.inventory_catalog}")
+    catalog_df = parse_cova.parse_inventory_catalog(args.inventory_catalog)
+
+    merged = parse_cova.join_brand(reorder_df, catalog_df)
+    merged = parse_cova.exclude_non_reorderable(merged)
 
     print("Computing reorder suggestions...")
-    suggestions = reorder.compute_reorder_suggestions(sales_summary, inventory_df)
+    suggestions = reorder.compute_reorder_suggestions(merged)
     if suggestions.empty:
         print("Nothing is low enough to reorder or watch right now.")
         return
-    to_order = suggestions[suggestions["needs_reorder"]]
-    watching = suggestions[~suggestions["needs_reorder"]]
-    print(f"{len(to_order)} product(s) need reordering, {len(watching)} on the watch list.")
+
+    to_order = suggestions[suggestions["status"] == "reorder"]
+    watching = suggestions[suggestions["status"] == "watching"]
+    already_on_order = suggestions[suggestions["status"] == "on_order"]
+    print(
+        f"{len(to_order)} product(s) need reordering, {len(watching)} on the watch list, "
+        f"{len(already_on_order)} already covered by an existing order."
+    )
 
     vendor_lookups = {}
     if not args.no_vendor_lookup and len(to_order) > 0:
@@ -74,7 +93,7 @@ def main():
                 print(f"Vendor lookup skipped/failed: {e}", file=sys.stderr)
 
     output_path = args.output or generate_po.default_output_path()
-    path = generate_po.build_po_workbook(to_order, watching, vendor_lookups, output_path)
+    path = generate_po.build_po_workbook(to_order, watching, already_on_order, vendor_lookups, output_path)
     print(f"Draft purchase order written to: {path}")
 
 

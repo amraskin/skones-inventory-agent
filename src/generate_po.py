@@ -2,10 +2,12 @@
 enriched with live vendor pricing/stock/substitutes.
 
 Layout:
-  - "All"      every SKU actually being ordered, across all vendors
-  - "<vendor>" one sheet per vendor, same rows filtered to that vendor
-  - "Watching" low-stock SKUs that are dampened by group-level logic -
-    visible for awareness, not on the order
+  - "All"       every SKU actually being ordered, across all vendors
+  - "<vendor>"  one sheet per vendor, same rows filtered to that vendor
+  - "Watching"  low-stock SKUs that are dampened by group-level logic -
+                visible for awareness, not on the order
+  - "On Order"  low-stock SKUs already fully covered by an existing order -
+                shown so you don't duplicate it
 """
 from __future__ import annotations
 
@@ -21,7 +23,9 @@ ORDER_COLS = [
     "sku",
     "category",
     "brand",
+    "supplier",
     "quantity_on_hand",
+    "on_order",
     "baseline_qty",
     "pct_remaining",
     "weekly_sales_velocity",
@@ -40,11 +44,25 @@ WATCHING_COLS = [
     "sku",
     "category",
     "brand",
+    "supplier",
     "quantity_on_hand",
     "baseline_qty",
     "pct_remaining",
     "weekly_sales_velocity",
     "group_healthy",
+]
+
+ON_ORDER_COLS = [
+    "product",
+    "sku",
+    "category",
+    "brand",
+    "supplier",
+    "quantity_on_hand",
+    "on_order",
+    "baseline_qty",
+    "pct_remaining",
+    "weekly_sales_velocity",
 ]
 
 
@@ -70,13 +88,14 @@ def _annotate_vendor_columns(df: pd.DataFrame, vendor_lookups: dict[str, VendorP
 def build_po_workbook(
     to_order: pd.DataFrame,
     watching: pd.DataFrame,
+    already_on_order: pd.DataFrame,
     vendor_lookups: dict[str, VendorProduct] | None,
     output_path: str | Path,
 ) -> Path:
-    """to_order / watching: the two slices of reorder.compute_reorder_suggestions
-    (status == "reorder" vs "watching"). vendor_lookups: optional
-    {product_name: VendorProduct} from a vendor client's search_product /
-    find_substitute calls.
+    """to_order / watching / already_on_order: the three slices of
+    reorder.compute_reorder_suggestions (status == "reorder" / "watching" /
+    "on_order"). vendor_lookups: optional {product_name: VendorProduct} from
+    a vendor client's search_product / find_substitute calls.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +112,7 @@ def build_po_workbook(
             group.reindex(columns=ORDER_COLS).to_excel(writer, sheet_name=sheet_name, index=False)
 
         watching.reindex(columns=WATCHING_COLS).to_excel(writer, sheet_name="Watching", index=False)
+        already_on_order.reindex(columns=ON_ORDER_COLS).to_excel(writer, sheet_name="On Order", index=False)
 
     return output_path
 

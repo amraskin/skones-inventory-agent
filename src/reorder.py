@@ -36,32 +36,30 @@ def _rule_for(rules: dict, product: str, category: str | None) -> dict:
     return merged
 
 
-def _group_key(category, brand) -> tuple:
-    # Falls back to category-only grouping if brand wasn't in the export.
-    return (category, brand) if pd.notna(brand) and brand else (category, None)
+def _group_key(category, brand, supplier) -> tuple:
+    # Brand is the real grouping signal; fall back to supplier for the SKUs
+    # (mostly accessories/glass) that have no brand on file.
+    if pd.notna(brand) and brand:
+        return (category, "brand", brand)
+    if pd.notna(supplier) and supplier:
+        return (category, "supplier", supplier)
+    return (category, "none", None)
 
 
-def compute_reorder_suggestions(sales_summary: pd.DataFrame, inventory_df: pd.DataFrame) -> pd.DataFrame:
-    """sales_summary: output of parse_cova.summarize_sales (product, sku, category, brand, daily_sales_velocity)
-    inventory_df: output of parse_cova.parse_inventory_export (product, sku, category, brand, quantity_on_hand)
+def compute_reorder_suggestions(inventory_df: pd.DataFrame) -> pd.DataFrame:
+    """inventory_df: output of parse_cova.join_brand(parse_reorder_report(...), parse_inventory_catalog(...))
+    - needs product, sku, category, brand, supplier, quantity_on_hand,
+      on_order, minimum_stock, daily_sales_velocity, days_of_stock_left.
 
     Returns one row per reorder-eligible SKU (velocity-gated SKUs are
-    dropped) with a status of "reorder" or "watching" and a suggested
-    order quantity.
+    dropped) with a status of "reorder", "watching", or "on_order" and a
+    suggested order quantity.
     """
     rules = load_rules()
 
-    inventory_with_baseline = baseline_tracker.update_and_get_baselines(inventory_df)
-
-    merged = pd.merge(
-        inventory_with_baseline,
-        sales_summary[["product", "sku", "daily_sales_velocity"]],
-        on=["product", "sku"],
-        how="left",
-    )
-    merged["daily_sales_velocity"] = merged["daily_sales_velocity"].fillna(0)
+    merged = baseline_tracker.update_and_get_baselines(inventory_df)
     merged["group_key"] = [
-        _group_key(c, b) for c, b in zip(merged.get("category"), merged.get("brand"))
+        _group_key(c, b, s) for c, b, s in zip(merged["category"], merged["brand"], merged["supplier"])
     ]
 
     # Group aggregates use ALL SKUs regardless of the velocity gate below -
@@ -84,10 +82,20 @@ def compute_reorder_suggestions(sales_summary: pd.DataFrame, inventory_df: pd.Da
             continue  # not enough sales signal either way
 
         baseline_qty = row["baseline_qty"] or 0
-        pct_remaining = (row["quantity_on_hand"] / baseline_qty) if baseline_qty > 0 else 1.0
+        # baseline_qty can legitimately be 0 (a SKU first seen already out of
+        # stock, before any restock has been observed) - that's still selling
+        # at least min_weekly_velocity/week per the gate above, so it's a
+        # real "out of stock" case, not a "0 of 0, so 100% fine" one.
+        out_of_stock = row["quantity_on_hand"] <= 0
+        pct_remaining = 0.0 if out_of_stock else (row["quantity_on_hand"] / baseline_qty if baseline_qty > 0 else 1.0)
+
+        # An explicit override in reorder_rules.yaml wins; otherwise fall
+        # back to whatever Minimum Stock is set to in COVA itself.
         par_level = rule.get("par_level")
+        if par_level is None and pd.notna(row.get("minimum_stock")):
+            par_level = row["minimum_stock"]
         par_breach = par_level is not None and row["quantity_on_hand"] < par_level
-        is_low = pct_remaining < rule["reorder_pct_threshold"] or par_breach
+        is_low = out_of_stock or pct_remaining < rule["reorder_pct_threshold"] or par_breach
 
         if not is_low:
             continue
@@ -103,11 +111,29 @@ def compute_reorder_suggestions(sales_summary: pd.DataFrame, inventory_df: pd.Da
         sku_share_of_group = (row["daily_sales_velocity"] / group_velocity) if group_velocity > 0 else 1.0
         is_outlier_mover = sku_share_of_group >= rule["outlier_share_threshold"]
 
-        status = "reorder" if (par_breach or not group_healthy or is_outlier_mover) else "watching"
+        would_reorder = par_breach or not group_healthy or is_outlier_mover
+        status = "reorder" if would_reorder else "watching"
 
-        target_qty = max(baseline_qty, par_level or 0)
-        suggested_qty = math.ceil(target_qty - row["quantity_on_hand"])
-        suggested_qty = max(suggested_qty, 0)
+        if baseline_qty > 0:
+            target_qty = max(baseline_qty, par_level or 0)
+        else:
+            # No restock has been observed yet for this SKU, so there's no
+            # baseline to replenish toward - fall back to a classic
+            # reorder-point estimate (enough to cover lead time + safety
+            # stock at its selling pace) until a real baseline exists.
+            target_qty = max(
+                row["daily_sales_velocity"] * group_threshold_days,
+                par_level or 0,
+                rule.get("min_order_qty", 1),
+            )
+        shortfall = math.ceil(target_qty - row["quantity_on_hand"])
+        shortfall = max(shortfall, 0)
+        on_order = row.get("on_order") or 0
+
+        if would_reorder and shortfall > 0 and on_order >= shortfall:
+            status = "on_order"  # already covered by an order already placed
+
+        suggested_qty = max(shortfall - on_order, 0)
         if suggested_qty > 0:
             suggested_qty = max(suggested_qty, rule.get("min_order_qty", 1))
         if rule.get("max_order_qty"):
@@ -119,14 +145,17 @@ def compute_reorder_suggestions(sales_summary: pd.DataFrame, inventory_df: pd.Da
                 "sku": row["sku"],
                 "category": row.get("category"),
                 "brand": row.get("brand"),
+                "supplier": row.get("supplier"),
                 "quantity_on_hand": row["quantity_on_hand"],
+                "on_order": on_order,
                 "baseline_qty": baseline_qty,
                 "pct_remaining": round(pct_remaining, 3),
                 "daily_sales_velocity": round(row["daily_sales_velocity"], 2),
                 "weekly_sales_velocity": round(weekly_velocity, 2),
+                "days_of_stock_left": row.get("days_of_stock_left"),
                 "group_healthy": bool(group_healthy),
                 "is_outlier_mover": bool(is_outlier_mover),
-                "status": status,  # "reorder" or "watching"
+                "status": status,  # "reorder", "watching", or "on_order"
                 "needs_reorder": status == "reorder",
                 "suggested_order_qty": int(suggested_qty),
                 "preferred_vendor": rule.get("preferred_vendor"),
@@ -136,4 +165,7 @@ def compute_reorder_suggestions(sales_summary: pd.DataFrame, inventory_df: pd.Da
     result = pd.DataFrame.from_records(records)
     if result.empty:
         return result
-    return result.sort_values(["status", "pct_remaining"], ascending=[True, True])
+    status_order = {"reorder": 0, "watching": 1, "on_order": 2}
+    result["_status_order"] = result["status"].map(status_order)
+    result = result.sort_values(["_status_order", "pct_remaining"], ascending=[True, True]).drop(columns="_status_order")
+    return result
